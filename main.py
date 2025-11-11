@@ -1,15 +1,21 @@
-# pip install openai tqdm mutagen
+# pip install openai tqdm mutagen python-dotenv
 
 from openai import OpenAI, APIError, APITimeoutError
 from tqdm import tqdm
 from mutagen.mp3 import MP3
+from dotenv import load_dotenv
 import os, time, sys, traceback, math, re
 
 # ✅ UTF-8 깨짐 방지
 sys.stdout.reconfigure(encoding='utf-8')
 
-# 🔑 OpenAI API 키
-client = OpenAI(api_key="")
+# ✅ .env에서 OpenAI API 키 로드
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    raise RuntimeError("❌ .env 파일에 OPENAI_API_KEY가 없습니다. .env 파일을 확인하세요.")
+
+client = OpenAI(api_key=api_key)
 
 input_dir = "converted"
 output_dir = "transcripts"
@@ -34,16 +40,31 @@ def split_mp3_positions(file_path, chunk_sec=60):
     return [(i * chunk_sec, min((i + 1) * chunk_sec, length_sec)) for i in range(count)]
 
 
+# ======================================
+# ⚙️ ffmpeg 없이 MP3 조각 자르기 (핵심 수정 부분)
+# ======================================
 def slice_mp3(file_path, start_sec, end_sec, out_path):
-    """MP3 일부만 잘라 임시 파일 저장"""
-    with open(file_path, "rb") as f:
-        data = f.read()
-    total_size = len(data)
-    total_time = MP3(file_path).info.length
-    start_b = int(total_size * (start_sec / total_time))
-    end_b = int(total_size * (end_sec / total_time))
-    with open(out_path, "wb") as o:
-        o.write(data[start_b:end_b])
+    """ffmpeg 없이 mutagen만 사용해 MP3 조각 자르기"""
+    try:
+        audio = MP3(file_path)
+        total_time = audio.info.length
+        bitrate = audio.info.bitrate  # bps 단위 (예: 128000)
+        bytes_per_sec = bitrate / 8   # 초당 바이트 수 계산
+
+        start_b = int(start_sec * bytes_per_sec)
+        end_b = int(end_sec * bytes_per_sec)
+
+        with open(file_path, "rb") as f:
+            header = f.read(2048)  # 헤더 확보
+            f.seek(start_b)
+            data = f.read(end_b - start_b)
+
+        with open(out_path, "wb") as out:
+            out.write(header)
+            out.write(data)
+    except Exception as e:
+        print(f"⚠️ MP3 슬라이스 중 오류 발생: {e}")
+        raise
 
 
 # ======================================
@@ -99,7 +120,7 @@ for idx, fname in enumerate(tqdm(files, desc="진행률"), start=1):
         continue
 
     # ======================================
-    # 🌐 GPT 번역 (영어 문장만 아래 줄에 번역 추가)
+    # 🌐 GPT 번역 (영문 문장만 아래 줄에 번역 추가)
     # ======================================
     print("   [GPT 번역] 시작 ...")
 
